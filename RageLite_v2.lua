@@ -167,6 +167,7 @@ local MAP = {
     ["ESP"] = {4, 1}, ["体力バー"] = {4, 1}, ["名前・距離"] = {4, 1}, ["FOV円"] = {4, 1},
     ["エイムボット"] = {4, 2}, ["エイム速度"] = {4, 2}, ["エイムFOV"] = {4, 2}, ["壁チェック"] = {4, 2},
     ["サイレントエイム"] = {4, 2}, ["SA命中率"] = {4, 2},
+    ["エイム部位"] = {4, 2}, ["体も追従"] = {4, 2}, ["SA部位"] = {4, 2},
 }
 
 local pages, tabBtns, cols, count = {}, {}, {}, {}
@@ -1107,7 +1108,8 @@ local pg = lp:WaitForChild("PlayerGui")
 
 local DEF = {esp = true, hpbar = true, nameDist = true, fovCircle = true,
     aim = false, aimSpeed = 0.2, aimFov = 200, aimWall = false,
-    sa = false, saChance = 100}
+    sa = false, saChance = 100,
+    aimPart = "胴体", saPart = "胴体", bodyFollow = true}
 for k, v in pairs(DEF) do if S[k] == nil then S[k] = v end end
 
 pcall(function() RunService:UnbindFromRenderStep("RL_Aim") end)
@@ -1135,8 +1137,8 @@ local function alive(p)
     if h and h.Health > 0 and r then return c, h, r end
 end
 
-local function aimPart(c)
-    if S.part == "頭" then
+local function aimPart(c, name)
+    if name == "頭" then
         local h = c:FindFirstChild("Head")
         if h then return h end
     end
@@ -1261,7 +1263,7 @@ local function visible(cam, part, c)
 end
 
 -- 画面の中心に一番近い敵(FOVの円の中だけ)
-local function pick(cam)
+local function pick(cam, name)
     local vs = cam.ViewportSize
     local center = Vector2.new(vs.X / 2, vs.Y / 2)
     local best, bd
@@ -1269,7 +1271,7 @@ local function pick(cam)
         if p ~= lp and enemy(p) then
             local c = alive(p)
             if c then
-                local part = aimPart(c)
+                local part = aimPart(c, name)
                 if part then
                     local sp, on = cam:WorldToViewportPoint(part.Position)
                     if on then
@@ -1301,23 +1303,47 @@ cs.Thickness = 1
 cs.Transparency = 0.4
 cs.Parent = circle
 
+local rotOff = false
 -- カメラ処理のあとに実行(自由視点・RAGE中は動かさない)
 RunService:BindToRenderStep("RL_Aim", Enum.RenderPriority.Camera.Value + 3, function()
     local cam = workspace.CurrentCamera
-    local part
-    if (S.aim or S.sa) and not S.rage and not S.fc then part = pick(cam) end
+    local aimT, saT
+    if not S.rage and not S.fc then
+        if S.aim then aimT = pick(cam, S.aimPart) end
+        if S.sa then
+            saT = (aimT and S.saPart == S.aimPart) and aimT or pick(cam, S.saPart)
+        end
+    end
 
     -- サイレントエイム用の情報(フックの中では重い処理をしないため、ここで用意)
-    if S.sa and part then
-        env.RL_SA = {pos = part.Position, cam = cam.CFrame.Position, camObj = cam}
+    if saT then
+        env.RL_SA = {pos = saT.Position, cam = cam.CFrame.Position, camObj = cam}
     else
         env.RL_SA = nil
     end
 
-    -- エイムボット(視点を少しずつ敵へ向ける)
-    if S.aim and part then
+    -- エイムボット(視点と体を少しずつ敵へ向ける)
+    local char = lp.Character
+    local root = char and char:FindFirstChild("HumanoidRootPart")
+    local hum = char and char:FindFirstChildOfClass("Humanoid")
+    if aimT then
         local cf = cam.CFrame
-        cam.CFrame = cf:Lerp(CFrame.lookAt(cf.Position, part.Position), S.aimSpeed)
+        cam.CFrame = cf:Lerp(CFrame.lookAt(cf.Position, aimT.Position), S.aimSpeed)
+        if S.bodyFollow and root and hum then
+            local tp = aimT.Position
+            local flat = Vector3.new(tp.X, root.Position.Y, tp.Z)
+            if (flat - root.Position).Magnitude > 0.5 then
+                hum.AutoRotate = false
+                rotOff = true
+                root.CFrame = CFrame.lookAt(root.Position, flat)
+            end
+        elseif rotOff and hum then
+            hum.AutoRotate = true
+            rotOff = false
+        end
+    elseif rotOff and hum then
+        hum.AutoRotate = true
+        rotOff = false
     end
 
     circle.Visible = S.fovCircle and (S.aim or S.sa)
@@ -1384,6 +1410,8 @@ RL.addToggle("体力バー", "hpbar")
 RL.addToggle("名前・距離", "nameDist")
 RL.addToggle("FOV円", "fovCircle")
 RL.addToggle("エイムボット", "aim")
+RL.addCycle("エイム部位", {"頭", "胴体"}, "aimPart", function(v) return v end)
+RL.addToggle("体も追従", "bodyFollow")
 RL.addCycle("エイム速度", {0.05, 0.1, 0.2, 0.35, 0.6, 1}, "aimSpeed",
     function(v) return math.floor(v * 100 + 0.5) .. "%" end)
 RL.addCycle("エイムFOV", {60, 120, 200, 350, 800}, "aimFov", function(v) return tostring(v) end)
@@ -1391,6 +1419,7 @@ RL.addToggle("壁チェック", "aimWall")
 RL.addToggle("サイレントエイム", "sa", function(on)
     if on and not saOk then say("このDeltaはフック非対応: サイレントエイム使用不可") end
 end)
+RL.addCycle("SA部位", {"頭", "胴体"}, "saPart", function(v) return v end)
 RL.addCycle("SA命中率", {25, 50, 75, 100}, "saChance", function(v) return v .. "%" end)
 
 say(saOk and "ESP・エイム 準備OK" or "ESP・エイム OK(サイレントエイムは非対応)")
