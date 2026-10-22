@@ -42,8 +42,9 @@ local SAVE_FILE = "RageLite_settings.json"
 local SAVE_KEYS = {"mode", "delay", "tp", "team", "cd", "div", "speed", "part", "predict", "depth",
     "view", "unk", "home", "homeEvery", "esp", "hpbar", "nameDist", "fovCircle", "aim", "aimSpeed",
     "aimFov", "aimWall", "sa", "saChance", "aimPart", "saPart", "bodyFollow", "autosave", "espWeapon", "avoidReflect", "walk", "walkSpeed", "saScreenRay", "saHold",
-    "prio", "reflectMode", "infJump", "knife", "knifeDist", "knifeStay", "knifeWait", "animFast",
-    "fireN", "lagAnim", "lagFx", "lagBullet", "lagHit", "lagSelf"}
+    "prio", "reflectMode", "infJump", "knife", "knifeBack", "knifeDown", "knifeStay", "knifeWait", "knifeFace", "knifePredict", "animFast",
+    "fireN", "lagAnim", "lagFx", "lagBullet", "lagHit", "lagSelf", "espRank", "knifeFar", "fakeInput", "knifeSpin", "knifeAbility", "abilityMode", "abilityDelay", "abilityHold", "abilityLead",
+    "farHome", "farHomeDist", "followPredict", "meleePre", "bodyFly", "flySpeed", "sameMatch", "matchDist"}
 local SAVE_LOADED = false
 pcall(function()
     if not (isfile and readfile and isfile(SAVE_FILE)) then return end
@@ -171,7 +172,12 @@ statLbl.Position = UDim2.fromOffset(5, 2)
 statLbl.AutomaticSize = Enum.AutomaticSize.Y
 statLbl.TextWrapped = true
 statLbl.TextYAlignment = Enum.TextYAlignment.Top
-local function say(t) statLbl.Text = tostring(t) statBox.CanvasPosition = Vector2.zero end
+local function say(t)
+    t = tostring(t)
+    if statLbl.Text == t then return end
+    statLbl.Text = t
+    statBox.CanvasPosition = Vector2.zero
+end
 
 local TABS = {"戦闘", "視点", "調査", "ESP"}
 local TITLES = {"Combat", "View", "Debug", "ESP / Aim"}
@@ -194,8 +200,15 @@ local MAP = {
     ["足速度変更"] = {1, 2}, ["足の速さ"] = {1, 2}, ["武器表示"] = {4, 1}, ["反射回避"] = {4, 2}, ["反射調査"] = {3, 1},
     ["画面レイ変更"] = {4, 2}, ["撃つ間だけ"] = {4, 2}, ["SA調査"] = {3, 1},
     ["優先順位"] = {1, 1}, ["反射検知"] = {4, 2},
-    ["ナイフモード"] = {1, 2}, ["ナイフ距離"] = {1, 2}, ["ナイフ滞在"] = {1, 2}, ["ナイフ待機"] = {1, 2},
+    ["ナイフモード"] = {1, 2}, ["ナイフ後方"] = {1, 2}, ["ナイフ地下"] = {1, 2}, ["ナイフ向き"] = {1, 2}, ["ナイフ予測"] = {1, 2}, ["ナイフ滞在"] = {1, 2}, ["ナイフ待機"] = {1, 2},
     ["無限ジャンプ"] = {1, 2}, ["アニメ高速"] = {1, 2}, ["連射回数"] = {1, 2},
+    ["ランク表示"] = {4, 1}, ["ナイフ帰還距離"] = {1, 2}, ["入力偽装攻撃"] = {1, 2}, ["敵情報調査"] = {3, 1},
+    ["視点ブンブン"] = {1, 2}, ["背中で能力ボタン"] = {1, 2}, ["ボタン一覧"] = {3, 1},
+    ["能力入力"] = {1, 2}, ["能力先押し"] = {1, 2}, ["能力タイミング"] = {1, 2}, ["能力長押し"] = {1, 2}, ["右クリックテスト"] = {3, 1},
+    ["遠方帰還"] = {1, 2}, ["遠方の座標"] = {1, 2}, ["追従予測"] = {1, 2}, ["近接の先行攻撃"] = {1, 2},
+    ["体で飛ぶ"] = {2, 1}, ["体の飛行速度"] = {2, 1},
+    ["エモート"] = {2, 2}, ["エモート再生"] = {2, 2}, ["エモート停止"] = {2, 2}, ["INMUのエモートをコピー"] = {2, 2},
+    ["同じ試合のみ"] = {1, 1}, ["対象距離"] = {1, 1},
     ["他人のアニメ停止"] = {3, 2}, ["自分のアニメ停止"] = {3, 2}, ["エフェクト削除"] = {3, 2},
     ["弾の描画を消す"] = {3, 2}, ["ヒット演出を消す"] = {3, 2}, ["ラグ調査"] = {3, 1},
 }
@@ -525,7 +538,7 @@ local env = (getgenv and getgenv()) or _G
 local RL = env.RL
 if not RL then warn("パート1が実行されていません") return end
 
-local S, lp, say = RL.S, RL.lp, RL.say
+local S, lp, say, ST = RL.S, RL.lp, RL.say, RL.ST
 S.unk = S.unk or "狙わない"
 S.prio = S.prio or "体力"
 
@@ -561,6 +574,36 @@ local function isEnemy(p)
     return mine ~= theirs
 end
 
+-- 同じ試合の相手だけを対象にする(ロビーサーバーで、ほかの試合をしている人を狙わないため)
+-- ① 自分の基準位置から「対象距離」より遠い人は除く ② 試合・部屋を表す属性が自分と違う人は除く
+if S.sameMatch == nil then S.sameMatch = true end
+if S.matchDist == nil then S.matchDist = 600 end
+local MKEYS = {"match", "arena", "room", "session", "lobby"}
+local function matchAttrs(inst, out)
+    for k, v in pairs(inst:GetAttributes()) do
+        local kl = k:lower()
+        for _, w in ipairs(MKEYS) do
+            if kl:find(w, 1, true) then out[k] = tostring(v) break end
+        end
+    end
+end
+local function inMatch(p)
+    if not S.sameMatch then return true end
+    local c = p.Character
+    local r = c and c:FindFirstChild("HumanoidRootPart")
+    if not r then return false end
+    local base = ST.ref
+    if S.matchDist > 0 and base and (r.Position - base).Magnitude > S.matchDist then return false end
+    local a, b = {}, {}
+    matchAttrs(lp, a)
+    matchAttrs(p, b)
+    for k, v in pairs(a) do
+        if b[k] ~= nil and b[k] ~= v then return false end
+    end
+    return true
+end
+RL.inMatch = inMatch
+
 local lastT, lastR = 0, nil
 local function closestEnemy()
     local now = tick()
@@ -573,7 +616,9 @@ local function closestEnemy()
         local c = p.Character
         local h = c and c:FindFirstChildOfClass("Humanoid")
         local r = c and c:FindFirstChild("HumanoidRootPart")
-        if p ~= lp and h and h.Health > 0 and r and (not S.team or isEnemy(p)) then
+        if p ~= lp and h and h.Health > 0 and r and (not S.team or isEnemy(p))
+            and inMatch(p)
+            and not (S.avoidReflect and RL.isDeflecting and RL.isDeflecting(c, p)) then
             local d = (r.Position - root.Position).Magnitude
             if S.prio == "体力" then
                 -- 体力が一番少ない敵。同じなら近い方
@@ -594,6 +639,8 @@ RL.isEnemy = isEnemy
 
 RL.addCycle("チーム不明時", {"狙わない", "敵扱い"}, "unk", function(v) return v end)
 RL.addCycle("優先順位", {"体力", "近さ"}, "prio", function(v) return v end)
+RL.addToggle("同じ試合のみ", "sameMatch")
+RL.addCycle("対象距離", {150, 300, 600, 1000, 0}, "matchDist", function(v) return v == 0 and "無制限" or (v .. "st") end)
 RL.addAction("チーム調査", function()
     local lines = {"自分: " .. tostring(teamOf(lp))}
     for _, p in ipairs(Players:GetPlayers()) do
@@ -641,7 +688,10 @@ local function getTarget()
     if target and target.Parent then
         local h = target:FindFirstChildOfClass("Humanoid")
         local r = target:FindFirstChild("HumanoidRootPart")
-        if h and h.Health > 0 and r then return target end
+        if h and h.Health > 0 and r
+            and not (S.avoidReflect and RL.isDeflecting and RL.isDeflecting(target)) then
+            return target
+        end
     end
     target = closest()
     return target
@@ -662,13 +712,37 @@ local function aimPoint(enemy)
     return pos
 end
 
+-- 当たり判定を消す(部品の一覧は覚えておく。毎フレーム全部を調べ直さない)
+local ccChar, ccParts
+local function noCollide(char)
+    if ccChar ~= char then
+        ccChar, ccParts = char, {}
+        for _, d in ipairs(char:GetDescendants()) do
+            if d:IsA("BasePart") then ccParts[#ccParts + 1] = d end
+        end
+    end
+    for i = 1, #ccParts do
+        local part = ccParts[i]
+        if part.CanCollide then part.CanCollide = false end
+    end
+end
+
+-- 敵の真下へ。通信の遅れの分だけ、敵の動く先を読んで合わせる(ずっと真下にいるため)
 local function placeUnder(root, enemy, aim)
     local er = enemy.HumanoidRootPart
-    root.CFrame = CFrame.lookAt(er.Position - Vector3.new(0, S.depth, 0), aim)
+    local base = er.Position
+    if S.followPredict then
+        local ping = 0
+        pcall(function() ping = lp:GetNetworkPing() end)
+        base = base + er.AssemblyLinearVelocity * (ping + 0.03)
+    end
+    root.CFrame = CFrame.lookAt(base - Vector3.new(0, S.depth, 0), aim)
     root.AssemblyLinearVelocity = Vector3.zero
     root.AssemblyAngularVelocity = Vector3.zero
     ST.lastSet = root.Position
 end
+RL.placeUnder = placeUnder
+RL.getTarget = getTarget
 
 -- CD短縮
 env.CD_ORIG3 = env.CD_ORIG3 or {}
@@ -883,15 +957,28 @@ local function safePoint()
     if lastSafe then return lastSafe.Position + Vector3.new(0, 3, 0) end
 end
 
+-- 遠方の待機場所(座標500000など。毎回少しずらす)
+local function newFarPoint()
+    local d = S.farHomeDist or 500000
+    return Vector3.new(d + math.random(-5000, 5000), 5000, d + math.random(-5000, 5000))
+end
+
 local function doReturn(root)
     release()
-    local pt = safePoint()
+    local pt
+    if S.farHome then
+        pt = newFarPoint()
+        ST.farHold = pt
+    else
+        ST.farHold = nil
+        pt = safePoint()
+    end
     if pt then
         root.CFrame = CFrame.new(pt)
         root.AssemblyLinearVelocity = Vector3.zero
         root.AssemblyAngularVelocity = Vector3.zero
         lastPos = root.Position
-        say(viewPos() and "撃破 → 視点の位置へ戻った" or "撃破 → 初期地点へ戻った")
+        say(S.farHome and "撃破 → 遠方へ退避" or (viewPos() and "撃破 → 視点の位置へ戻った" or "撃破 → 初期地点へ戻った"))
     end
     ST.attacking, ST.lastSet = false, nil
 end
@@ -994,7 +1081,7 @@ track(RunService.Heartbeat:Connect(function()
         lastPos = root.Position
         return
     end
-    if S.rage and not ST.attacking and not ST.lastSet and lastPos
+    if S.rage and not S.knife and not ST.attacking and not ST.lastSet and lastPos
         and (root.Position - lastPos).Magnitude > 80 then
         endMatch("試合終了(ロビーへ移動) → RAGE無効")
         lastPos = root.Position
@@ -1048,9 +1135,7 @@ track(RunService.Heartbeat:Connect(function()
 
         if S.tp and not S.knife then
             hum.PlatformStand = true
-            for _, p in ipairs(char:GetDescendants()) do
-                if p:IsA("BasePart") then p.CanCollide = false end
-            end
+            noCollide(char)
             placeUnder(root, enemy, aimPoint(enemy))
         end
 
@@ -1162,7 +1247,11 @@ local DEF = {esp = true, hpbar = true, nameDist = true, espWeapon = true, fovCir
     sa = false, saChance = 100, saScreenRay = false, saHold = true,
     aimPart = "胴体", saPart = "胴体", bodyFollow = true,
     avoidReflect = true, walk = false, walkSpeed = 50,
-    reflectMode = "検知", infJump = false, knife = false, knifeDist = 4, knifeStay = 0.05, knifeWait = 3,
+    reflectMode = "刀持ち全員", infJump = false, knife = false, knifeBack = 4, knifeDown = 0, knifeStay = 0.1, knifeWait = 3,
+    knifeFace = "攻撃時だけ向く", knifePredict = true,
+    knifeFar = 5000, fakeInput = true, espRank = true,
+    farHome = true, farHomeDist = 500000, followPredict = true, meleePre = true, bodyFly = false, flySpeed = 60, knifeSpin = true, knifeAbility = true,
+    abilityMode = "両方", abilityDelay = 0.02, abilityHold = 0.05, abilityLead = 0.1,
     animFast = false, fireN = 2, lagAnim = true, lagFx = true, lagBullet = true, lagHit = true, lagSelf = false}
 for k, v in pairs(DEF) do if S[k] == nil then S[k] = v end end
 
@@ -1199,49 +1288,211 @@ local function aimPart(c, name)
     return c:FindFirstChild("UpperTorso") or c:FindFirstChild("Torso") or c:FindFirstChild("HumanoidRootPart")
 end
 
------------------------------------------------------------- 武器の判別 / 刀の反射(デフレクト)の検知
-local itemSet
+------------------------------------------------------------ 武器の判別 / ランク / 刀の反射(デフレクト)の検知
+local itemSet, itemNorm
+local function norm(n) return (tostring(n):lower():gsub("[^%w]", "")) end
+
+-- 武器の名前リスト(ゲームのItemLibraryが読めなくても使えるように、既知の名前も入れておく)
+local KNOWN = {"Crossbow", "Grenade Launcher", "Medkit", "Jump Pad", "Spear", "Flashbang", "Elixir",
+    "Subspace Tripmine", "Flamethrower", "Grenade", "Satchel", "Warpstone", "Wildcat", "Grappler", "Scythe",
+    "Permafrost", "Slingshot", "Battle Axe", "Distortion", "Flare Gun", "Molotov", "Knife", "Fists", "Spray",
+    "Shotgun", "Revolver", "Trowel", "Riot Shield", "Assault Rifle", "Sniper", "Energy Pistols", "Daggers",
+    "Shorty", "Scepter", "Glast Shard", "Maul", "Chainsaw", "Warper", "Freeze Ray", "Exogun", "Minigun",
+    "Paintball Gun", "RNG Dice", "Energy Rifle", "Katana", "RPG", "Bow", "Uzi", "Smoke Grenade",
+    "Burst Rifle", "Handgun", "Gunblade", "Glass Cannon", "War Horn"}
+
 local function loadItems()
-    if itemSet then return itemSet end
-    itemSet = {}
+    if itemSet then return itemNorm end
+    itemSet, itemNorm = {}, {}
+    for _, n in ipairs(KNOWN) do itemSet[n] = true itemNorm[norm(n)] = n end
     pcall(function()
         for _, m in ipairs(game:GetService("ReplicatedStorage"):GetDescendants()) do
             if m:IsA("ModuleScript") and m.Name == "ItemLibrary" then
                 local lib = require(m)
                 if type(lib) == "table" and type(lib.Items) == "table" then
-                    for name in pairs(lib.Items) do itemSet[tostring(name)] = true end
+                    for name in pairs(lib.Items) do
+                        itemSet[tostring(name)] = true
+                        itemNorm[norm(name)] = tostring(name)
+                    end
                 end
             end
         end
     end)
-    return itemSet
+    return itemNorm
 end
 
--- 敵が持っている武器の名前(Tool → キャラの子 → 属性 → 子孫 の順に探す)
-local function weaponName(p, c)
-    local tool = c:FindFirstChildOfClass("Tool")
-    if tool then return tool.Name end
-    local items = loadItems()
-    for _, d in ipairs(c:GetChildren()) do
-        if items[d.Name] then return d.Name end
+local W_NAMES = {"Weapon", "EquippedWeapon", "CurrentWeapon", "ActiveWeapon", "Equipped", "EquippedItem",
+    "CurrentItem", "Item", "Held", "HeldItem", "Holding", "Tool", "Wep"}
+local W_KEYS = {"weapon", "equipped", "equip", "held", "holding", "tool", "gun", "wep", "item"}
+
+local function keyIsWeapon(k)
+    k = tostring(k):lower()
+    for _, w in ipairs(W_KEYS) do
+        if k:find(w, 1, true) then return true end
     end
-    for _, inst in ipairs({c, p}) do
-        for k, v in pairs(inst:GetAttributes()) do
-            if type(v) == "string" then
-                local kl = k:lower()
-                if items[v] or kl:find("weapon", 1, true) or kl:find("equipped", 1, true)
-                    or kl:find("item", 1, true) then
-                    return v
+    return false
+end
+
+-- 値(文字列 / インスタンス)から武器の名前を取り出す
+local function resolve(v)
+    local nn = loadItems()
+    if typeof(v) == "Instance" then
+        if nn[norm(v.Name)] then return nn[norm(v.Name)] end
+        for _, d in ipairs(v:GetDescendants()) do
+            if nn[norm(d.Name)] then return nn[norm(d.Name)] end
+        end
+        local f = v:GetChildren()[1]
+        if (v:IsA("Folder") or v:IsA("Configuration")) and f then return f.Name end
+        return v.Name
+    elseif type(v) == "string" and v ~= "" then
+        return nn[norm(v)] or v
+    end
+end
+
+-- ワークスペース内にある「武器の名前のモデル/パーツ」を覚えておく(キャラの外に置かれた武器も見つけるため)
+local itemObjs = {}   -- [Instance] = 武器名
+local function trackItem(inst)
+    if inst:IsA("Model") or inst:IsA("BasePart") or inst:IsA("Tool") or inst:IsA("Accessory") then
+        local n = loadItems()[norm(inst.Name)]
+        if n then itemObjs[inst] = n end
+    end
+end
+loadItems()
+track(workspace.DescendantAdded:Connect(function(inst) pcall(trackItem, inst) end))
+track(workspace.DescendantRemoving:Connect(function(inst) itemObjs[inst] = nil end))
+task.spawn(function()
+    local n = 0
+    for _, d in ipairs(workspace:GetDescendants()) do
+        pcall(trackItem, d)
+        n += 1
+        if n % 400 == 0 then task.wait() end
+    end
+end)
+
+local function posOf(inst)
+    if inst:IsA("Model") then
+        local ok, cf = pcall(function() return inst:GetPivot() end)
+        return ok and cf.Position or nil
+    elseif inst:IsA("BasePart") then
+        return inst.Position
+    elseif inst:IsA("Tool") then
+        local h = inst:FindFirstChild("Handle")
+        return h and h.Position
+    end
+end
+
+-- 持ち主のキャラ(Humanoidのあるモデル)
+local function owner(inst)
+    local x = inst.Parent
+    while x and x ~= workspace do
+        if x:IsA("Model") and x:FindFirstChildOfClass("Humanoid") then return x end
+        x = x.Parent
+    end
+end
+
+-- キャラの近く(9stud以内)にある武器モデル
+local function nearbyItem(c)
+    local root = c:FindFirstChild("HumanoidRootPart")
+    if not root then return end
+    local cam = workspace.CurrentCamera
+    local best, bd
+    for inst, name in pairs(itemObjs) do
+        if inst.Parent and not (cam and inst:IsDescendantOf(cam)) then
+            local ow = owner(inst)
+            if ow == nil or ow == c then
+                local ip = posOf(inst)
+                if ip then
+                    local d = (ip - root.Position).Magnitude
+                    if d < 9 and (not bd or d < bd) then best, bd = name, d end
                 end
             end
         end
     end
-    for _, d in ipairs(c:GetDescendants()) do
-        if items[d.Name] and (d:IsA("Model") or d:IsA("BasePart") or d:IsA("Folder")) then
-            return d.Name
+    return best
+end
+
+-- 再生中のアニメの名前から武器を当てる(例: "Katana_Idle" → Katana)。長く一致した名前を優先
+local function fromAnims(c)
+    local nn = loadItems()
+    local hum = c:FindFirstChildOfClass("Humanoid")
+    local an = hum and hum:FindFirstChildOfClass("Animator")
+    if not an then return end
+    local best, bl
+    for _, t in ipairs(an:GetPlayingAnimationTracks()) do
+        local texts = {norm(t.Name)}
+        local a = t.Animation
+        if a then table.insert(texts, norm(a.Name)) end
+        for _, tx in ipairs(texts) do
+            for key, name in pairs(nn) do
+                if #key >= 3 and tx:find(key, 1, true) and (not bl or #key > bl) then
+                    best, bl = name, #key
+                end
+            end
         end
     end
-    return "-"
+    return best
+end
+
+-- 敵が持っている武器の名前。Tool → Weapon等の値 → 属性 → 値オブジェクト → キャラのモデル
+-- → キャラの近くの武器モデル → 再生中アニメの名前、の順に探す
+local function weaponName(p, c)
+    local nn = loadItems()
+    local tool = c:FindFirstChildOfClass("Tool")
+    if tool then return tool.Name end
+
+    -- ① Weapon / Equipped などの名前の子や値
+    for _, holder in ipairs({c, p}) do
+        for _, n in ipairs(W_NAMES) do
+            local d = holder:FindFirstChild(n)
+            if d then
+                local r
+                if d:IsA("ValueBase") then r = resolve(d.Value) else r = resolve(d) end
+                if r and r ~= n then return r end
+            end
+        end
+    end
+    -- ② 属性(武器っぽい名前のキー、または値が武器名)
+    for _, holder in ipairs({c, p}) do
+        for k, v in pairs(holder:GetAttributes()) do
+            if type(v) == "string" and v ~= "" and (nn[norm(v)] or keyIsWeapon(k)) then
+                return resolve(v)
+            end
+        end
+    end
+    -- ③ プレイヤー/キャラの下にある値オブジェクト
+    local function vals(folder, depth)
+        for _, d in ipairs(folder:GetChildren()) do
+            if d:IsA("ValueBase") then
+                local v = d.Value
+                if (type(v) == "string" and (nn[norm(v)] or (keyIsWeapon(d.Name) and v ~= "")))
+                    or (typeof(v) == "Instance" and keyIsWeapon(d.Name)) then
+                    return resolve(v)
+                end
+            elseif depth > 0 and (d:IsA("Folder") or d:IsA("Configuration")) then
+                local r = vals(d, depth - 1)
+                if r then return r end
+            end
+        end
+    end
+    local r = vals(p, 2) or vals(c, 1)
+    if r then return r end
+    -- ④ キャラについている武器モデル(名前が同じ、または武器名を含む)
+    for _, d in ipairs(c:GetDescendants()) do
+        local key = norm(d.Name)
+        local n = nn[key]
+        if n and (d:IsA("Model") or d:IsA("BasePart") or d:IsA("Folder") or d:IsA("Accessory")) then return n end
+        if d.Name == "Handle" and d.Parent and nn[norm(d.Parent.Name)] then return nn[norm(d.Parent.Name)] end
+        if #key >= 5 and (d:IsA("Model") or d:IsA("Folder") or d:IsA("Accessory") or d:IsA("Tool")) then
+            for k2, nm in pairs(nn) do
+                if #k2 >= 5 and key:find(k2, 1, true) then return nm end
+            end
+        end
+    end
+    -- ⑤ キャラの近くにある武器モデル(キャラの外に置かれている場合)
+    local near = nearbyItem(c)
+    if near then return near end
+    -- ⑥ 再生中のアニメの名前
+    return fromAnims(c) or "-"
 end
 
 -- 0.25秒だけ結果を覚えておく(毎フレーム調べると重いため)
@@ -1255,6 +1506,89 @@ local function weaponOf(p, c)
     return n
 end
 
+-- 相手のランク。Elo/Division/Tier/Rank などの名前の値・属性を、プレイヤーの下(3階層)、
+-- キャラの下(2階層)、ReplicatedStorage内の「プレイヤー名/ユーザーIDのフォルダ」から探す。
+-- グループのランク(名前や置き場所に group / role を含むもの)は除く。Eloを一番優先する。
+-- 見つからなければ、頭上の名前表示などの文字(Gold, Diamond など)を探す
+local RANK_KEYS = {"elo", "mmr", "rating", "division", "tier", "league", "rank", "trophy", "prestige", "level", "grade"}
+local TIER_WORDS = {"bronze", "silver", "gold", "platinum", "diamond", "master", "grandmaster", "challenger",
+    "legend", "nemesis", "unreal", "elite", "champion", "iron", "emerald", "ruby"}
+local SKIP = {PlayerGui = true, Backpack = true, PlayerScripts = true, StarterGear = true}
+
+local function rankOf(p, c)
+    local found, seen = {}, {}
+    local function consider(k, v, ctx)
+        local tv = type(v)
+        if tv ~= "number" and tv ~= "string" then return end
+        local kl = tostring(k):lower()
+        local cl = ctx:lower()
+        -- グループのランク・役職は対象外(キー名だけでなく、入っているフォルダ名も見る)
+        if kl:find("group", 1, true) or kl:find("role", 1, true)
+            or cl:find("group", 1, true) or cl:find("role", 1, true) then return end
+        for i, w in ipairs(RANK_KEYS) do
+            if kl:find(w, 1, true) then
+                local txt = tostring(k) .. " " .. tostring(tv == "number" and math.floor(v) or v)
+                if not seen[txt] then
+                    seen[txt] = true
+                    table.insert(found, {i = i, t = txt})
+                end
+                return
+            end
+        end
+    end
+    local function scan(inst, depth, ctx)
+        for k, v in pairs(inst:GetAttributes()) do consider(k, v, ctx) end
+        for _, d in ipairs(inst:GetChildren()) do
+            if d:IsA("ValueBase") then
+                consider(d.Name, d.Value, ctx)
+                for k, v in pairs(d:GetAttributes()) do consider(k, v, ctx) end
+            elseif depth > 0 and not SKIP[d.Name] and not d:IsA("Tool") and not d:IsA("BasePart")
+                and not d:IsA("Humanoid") then
+                scan(d, depth - 1, ctx .. "/" .. d.Name)
+            end
+        end
+    end
+    scan(p, 3, "")
+    if c then scan(c, 2, "") end
+
+    local rs = game:GetService("ReplicatedStorage")
+    local function look(parent)
+        local d = parent:FindFirstChild(p.Name) or parent:FindFirstChild(tostring(p.UserId))
+        if d then scan(d, 2, "") end
+    end
+    look(rs)
+    for _, f in ipairs(rs:GetChildren()) do
+        if f:IsA("Folder") or f:IsA("Configuration") then look(f) end
+    end
+
+    if #found > 0 then
+        table.sort(found, function(a, b) return a.i < b.i end)
+        return found[1].t .. (found[2] and (" / " .. found[2].t) or "")
+    end
+    if c then
+        for _, d in ipairs(c:GetDescendants()) do
+            if d:IsA("TextLabel") then
+                local t = d.Text:lower()
+                for _, w in ipairs(TIER_WORDS) do
+                    if t:find(w, 1, true) then return d.Text end
+                end
+            end
+        end
+    end
+    return "-"
+end
+
+local rcache = setmetatable({}, {__mode = "k"})
+local function rankCached(p, c)
+    local e = rcache[p]
+    local now = tick()
+    if e and now - e.t < 1 then return e.v end
+    local v = rankOf(p, c)
+    rcache[p] = {v = v, t = now}
+    return v
+end
+
+-- 刀の反射(デフレクト)
 local WORDS = {"deflect", "parry", "reflect", "block", "guard", "counter"}
 local function hasWord(n)
     n = tostring(n):lower()
@@ -1265,12 +1599,17 @@ local function hasWord(n)
 end
 local function truthy(v) return v == true or (type(v) == "number" and v > 0) end
 
--- 刀を持っていて、反射中らしい印(属性・値・子の名前・アニメ名)があれば true
+-- 反射中なら true。
+--   「刀持ち全員」: 刀を持っている敵は全員、反射する前提で避ける
+--   「アニメ」   : 刀を持っていて、動作アニメ(Action以上)を再生中なら反射中とみなす
+--   「検知」     : 反射中らしい印(属性・値・子の名前・アニメ名)があるときだけ
 local function isDeflecting(c, p)
     p = p or Players:GetPlayerFromCharacter(c)
     if not p then return false end
-    if not weaponOf(p, c):lower():find("katana", 1, true) then return false end
-    if S.reflectMode == "刀持ち全員" then return true end
+    local w = weaponOf(p, c):lower()
+    local known = w ~= "-"
+    if known and not w:find("katana", 1, true) then return false end
+    if S.reflectMode == "刀持ち全員" then return known end
 
     local tool = c:FindFirstChildOfClass("Tool")
     local list = tool and {c, p, tool} or {c, p}
@@ -1288,15 +1627,103 @@ local function isDeflecting(c, p)
         for _, t in ipairs(an:GetPlayingAnimationTracks()) do
             local a = t.Animation
             if hasWord(t.Name) or (a and hasWord(a.Name)) then return true end
+            if known and S.reflectMode == "アニメ" then
+                local pv = t.Priority.Value
+                if pv >= 2 and pv < 1000 then return true end
+            end
         end
     end
     return false
 end
 
--- RAGE側(撃つ処理)からも使えるように公開
+-- RAGE側(撃つ処理)や対象選びからも使えるように公開
 RL.isDeflecting = function(c, p) return isDeflecting(c, p) end
 
 local deflecting = {}   -- [キャラ] = HumanoidRootPart (反射中の敵)
+
+-- 敵のデータ構造を書き出す(武器・ランクの見つけ方を合わせるための調査用)
+local function dumpEnemy()
+    local target
+    for _, p in ipairs(Players:GetPlayers()) do
+        if p ~= lp and p.Character and enemy(p) then target = p break end
+    end
+    if not target then
+        for _, p in ipairs(Players:GetPlayers()) do
+            if p ~= lp and p.Character then target = p break end
+        end
+    end
+    if not target then say("調べる相手がいません") return end
+    local p, c = target, target.Character
+    local lines = {"相手: " .. p.Name}
+    local function attrs(inst, label)
+        for k, v in pairs(inst:GetAttributes()) do
+            table.insert(lines, label .. " attr " .. tostring(k) .. "=" .. tostring(v))
+        end
+    end
+    local function tree(inst, label, depth)
+        for _, d in ipairs(inst:GetChildren()) do
+            local extra = ""
+            if d:IsA("ValueBase") then extra = "=" .. tostring(d.Value) end
+            table.insert(lines, label .. " " .. d.Name .. ":" .. d.ClassName .. extra)
+            attrs(d, label .. "/" .. d.Name)
+            if depth > 0 and (d:IsA("Folder") or d:IsA("Configuration")) then tree(d, label .. "/" .. d.Name, depth - 1) end
+        end
+    end
+    attrs(p, "player")
+    attrs(c, "char")
+    tree(p, "player", 2)
+    tree(c, "char", 0)
+    for _, d in ipairs(c:GetDescendants()) do
+        if d:IsA("TextLabel") and d.Text ~= "" then table.insert(lines, "char text: " .. d.Text) end
+    end
+    local hum2 = c:FindFirstChildOfClass("Humanoid")
+    local an2 = hum2 and hum2:FindFirstChildOfClass("Animator")
+    if an2 then
+        for _, t in ipairs(an2:GetPlayingAnimationTracks()) do
+            local a = t.Animation
+            table.insert(lines, "anim: " .. t.Name .. " [" .. (a and a.AnimationId or "") .. "] " .. t.Priority.Name)
+        end
+    end
+    local rootc = c:FindFirstChild("HumanoidRootPart")
+    if rootc then
+        local cnt = 0
+        for inst, nm in pairs(itemObjs) do
+            if inst.Parent and cnt < 6 then
+                local ip = posOf(inst)
+                if ip and (ip - rootc.Position).Magnitude < 12 then
+                    cnt += 1
+                    table.insert(lines, "近くの武器モデル: " .. inst:GetFullName() .. " = " .. nm)
+                end
+            end
+        end
+    end
+    local rsv = game:GetService("ReplicatedStorage")
+    for _, f in ipairs(rsv:GetChildren()) do
+        local d = f:FindFirstChild(p.Name) or f:FindFirstChild(tostring(p.UserId))
+        if d then
+            table.insert(lines, "ReplicatedStorage内: " .. d:GetFullName())
+            attrs(d, "rs")
+            tree(d, "rs", 1)
+        end
+    end
+    table.insert(lines, "武器判定: " .. weaponName(p, c))
+    table.insert(lines, "ランク判定: " .. rankOf(p, c))
+    local mine = lp.Character
+    if mine then
+        table.insert(lines, "自分の武器判定: " .. weaponName(lp, mine))
+        for _, d in ipairs(mine:GetChildren()) do
+            if d:IsA("Tool") then table.insert(lines, "自分のTool: " .. d.Name) end
+        end
+        local bp = lp:FindFirstChild("Backpack")
+        if bp then
+            for _, d in ipairs(bp:GetChildren()) do table.insert(lines, "バックパック: " .. d.Name .. ":" .. d.ClassName) end
+        end
+    end
+    local out = table.concat(lines, "\n")
+    if #lines > 90 then out = table.concat(lines, "\n", 1, 90) .. "\n…(省略)" end
+    say(out)
+    if setclipboard then pcall(setclipboard, table.concat(lines, "\n")) end
+end
 
 ------------------------------------------------------------ ESP + 体力 + 武器
 local ents = {}
@@ -1334,7 +1761,7 @@ local function make(p, c, head)
     local bb = Instance.new("BillboardGui")
     bb.Adornee = head
     bb.AlwaysOnTop = true
-    bb.Size = UDim2.fromOffset(120, 52)
+    bb.Size = UDim2.fromOffset(120, 66)
     bb.StudsOffset = Vector3.new(0, 3, 0)
     bb.Parent = egui
 
@@ -1354,8 +1781,10 @@ local function make(p, c, head)
 
     local hpL = mkLabel(bb, 22, 11, Enum.Font.Gotham)
     local wL = mkLabel(bb, 36, 11, Enum.Font.GothamBold)
+    local rL = mkLabel(bb, 49, 11, Enum.Font.Gotham)
+    rL.TextColor3 = Color3.fromRGB(150, 210, 255)
 
-    ents[p] = {char = c, hl = hl, bb = bb, nameL = nameL, bar = bar, fill = fill, hpL = hpL, wL = wL}
+    ents[p] = {char = c, hl = hl, bb = bb, nameL = nameL, bar = bar, fill = fill, hpL = hpL, wL = wL, rL = rL}
     return ents[p]
 end
 
@@ -1365,7 +1794,7 @@ track(RunService.RenderStepped:Connect(function()
     local now = tick()
     local slow = now - lastSlow > 0.1
     if slow then lastSlow = now end
-    if not (S.esp or S.hpbar or S.nameDist or S.espWeapon) then
+    if not (S.esp or S.hpbar or S.nameDist or S.espWeapon or S.espRank) then
         for p in pairs(ents) do drop(p) end
         return
     end
@@ -1390,11 +1819,12 @@ track(RunService.RenderStepped:Connect(function()
                 e.hl.Enabled = S.esp
                 e.hl.FillColor = col
 
-                e.bb.Enabled = S.hpbar or S.nameDist or S.espWeapon
+                e.bb.Enabled = S.hpbar or S.nameDist or S.espWeapon or S.espRank
                 e.nameL.Visible = S.nameDist
                 e.bar.Visible = S.hpbar
                 e.hpL.Visible = S.hpbar
                 e.wL.Visible = S.espWeapon
+                e.rL.Visible = S.espRank
                 if S.nameDist and slow then
                     local dist = math.floor((head.Position - cam.CFrame.Position).Magnitude)
                     e.nameL.Text = string.format("%s  [%dm]", p.DisplayName, dist)
@@ -1403,6 +1833,9 @@ track(RunService.RenderStepped:Connect(function()
                     e.fill.Size = UDim2.new(ratio, 0, 1, 0)
                     e.fill.BackgroundColor3 = col
                     e.hpL.Text = math.floor(h.Health) .. " / " .. math.floor(h.MaxHealth)
+                end
+                if S.espRank and slow then
+                    e.rL.Text = "ランク: " .. rankCached(p, c)
                 end
                 if S.espWeapon and slow then
                     local w = weaponOf(p, c)
@@ -1436,7 +1869,7 @@ local function pick(cam, name)
     local myRoot = lp.Character and lp.Character:FindFirstChild("HumanoidRootPart")
     local best, b1, b2
     for _, p in ipairs(Players:GetPlayers()) do
-        if p ~= lp and enemy(p) then
+        if p ~= lp and enemy(p) and (not RL.inMatch or RL.inMatch(p)) then
             local c, h, r = alive(p)
             if c and not deflecting[c] then
                 local part = aimPart(c, name)
@@ -1672,6 +2105,10 @@ pcall(function()
         local old
         old = hookmetamethod(game, "__namecall", newcclosure(function(self, ...)
             local m = getnamecallmethod()
+            if m == "IsMouseButtonPressed" and env.RL_RMB and not checkcaller() then
+                local ut = ...
+                if ut == Enum.UserInputType.MouseButton2 then return true end
+            end
             -- 高速パス: レイ関係のメソッドで、サイレントエイム/調査が有効なときだけ処理する
             -- (ゲームの全ての呼び出しを通るので、ここが重いとラグの原因になる)
             if RAYM[m] and (env.RL_SA or env.RL_SA_DBG) then
@@ -1748,35 +2185,186 @@ track(RunService.Heartbeat:Connect(function()
     end
 end))
 
------------------------------------------------------------- ナイフモード(背後へ一瞬テレポート → 初期地点で待機)
+------------------------------------------------------------ ナイフモード(背後へ一瞬テレポート → 能力ボタンで刺す → マップから遠く離れたランダムな場所で待機)
 pcall(function() RunService:UnbindFromRenderStep("RL_Knife") end)
-local K = {state = "wait", t = tick(), enemy = nil, origin = nil}
+local K = {state = "wait", t = tick(), enemy = nil, far = nil, base = nil, lastEquip = 0, pressed = false,
+    rmbDown = false, rmbDone = false, rmbT = 0, lastAtk = 0, hits = 0, tries = 0, hp0 = nil}
 
-local function findKnife()
-    local char = lp.Character
-    if not char then return end
-    local cur = char:FindFirstChildOfClass("Tool")
-    if cur and cur.Name:lower():find("knife", 1, true) then return cur, true end
+-- マップの外(上空)の、毎回ちがうランダムな場所
+local function farPoint(base)
+    local a = math.random() * math.pi * 2
+    local r = S.knifeFar * (0.6 + math.random() * 0.4)
+    local up = S.knifeFar * (0.3 + math.random() * 0.5)
+    return Vector3.new(base.X + math.cos(a) * r, base.Y + up, base.Z + math.sin(a) * r)
+end
+
+-- 360°どの向きでもランダム(毎フレーム変える)
+local function randRot()
+    return CFrame.Angles((math.random() - 0.5) * math.pi, math.random() * math.pi * 2, 0)
+end
+
+-- 位置を pt にする。face があればその方向を向く / なければ「視点ブンブン」ON=ランダム、OFF=今のまま
+local function place(root, pt, face)
+    local rot
+    if face and (face - pt).Magnitude > 0.1 then
+        rot = CFrame.lookAt(pt, face) - pt
+    else
+        rot = S.knifeSpin and randRot() or (root.CFrame - root.Position)
+    end
+    root.CFrame = CFrame.new(pt) * rot
+    root.AssemblyLinearVelocity = Vector3.zero
+    root.AssemblyAngularVelocity = Vector3.zero
+end
+
+-- 刺す位置: 敵の向きの反対側へ「後方」stud、下へ「地下」stud。動いている敵には先読みを入れる
+local function strikeTarget(er)
+    local base = er.Position
+    if S.knifePredict then
+        local ping = 0
+        pcall(function() ping = lp:GetNetworkPing() end)
+        base = base + er.AssemblyLinearVelocity * (ping + 0.05)
+    end
+    return base - er.CFrame.LookVector * S.knifeBack - Vector3.new(0, S.knifeDown, 0)
+end
+
+local function applyStrike(root, er)
+    local face = (S.knifeFace == "攻撃時だけ向く") and er.Position or nil
+    place(root, strikeTarget(er), face)
+end
+
+-- 入力を偽装して、ゲームの「クリック」の処理を直接呼ぶ(押す=down true / 離す=down false)
+local function fakeButton(inputType, down)
+    if not getconnections then return end
+    local obj = {UserInputType = inputType,
+        UserInputState = down and Enum.UserInputState.Begin or Enum.UserInputState.End,
+        KeyCode = Enum.KeyCode.Unknown, Position = Vector3.zero, Delta = Vector3.zero}
+    for _, cn in ipairs(getconnections(down and UIS.InputBegan or UIS.InputEnded)) do
+        pcall(function() cn:Fire(obj, false) end)
+    end
+end
+
+local function fakeClick(inputType)
+    fakeButton(inputType, true)
+    fakeButton(inputType, false)
+end
+
+local function attack(char)
+    local tool = char:FindFirstChildOfClass("Tool")
+    if tool then pcall(function() tool:Activate() end) end
+    if S.fakeInput then pcall(fakeClick, Enum.UserInputType.MouseButton1) end
+end
+
+-- 攻撃は0.08秒おき(毎フレーム送ると、ゲーム側のクールダウンでかえって通らないことがある)
+local function tryAttack(char)
+    if tick() - K.lastAtk < 0.08 then return end
+    K.lastAtk = tick()
+    attack(char)
+end
+
+-- 画面のボタンを、名前や文字で探して押す
+local function ourGui(d) return d:FindFirstAncestor("RageLite") or d:FindFirstAncestor("RL_ESP") end
+
+local function pressWords(words)
+    if not getconnections then return false end
+    for _, d in ipairs(pg:GetDescendants()) do
+        if d:IsA("GuiButton") and not ourGui(d) then
+            local t = d.Name:lower()
+            if d:IsA("TextButton") then t = t .. " " .. d.Text:lower() end
+            for _, ch in ipairs(d:GetDescendants()) do
+                if ch:IsA("TextLabel") then t = t .. " " .. ch.Text:lower() end
+            end
+            for _, w in ipairs(words) do
+                if t:find(w, 1, true) then
+                    for _, sig in ipairs({d.Activated, d.MouseButton1Click, d.MouseButton1Down}) do
+                        pcall(function()
+                            for _, cn in ipairs(getconnections(sig)) do cn:Fire() end
+                        end)
+                    end
+                    return true
+                end
+            end
+        end
+    end
+    return false
+end
+
+-- 能力(ナイフの特殊攻撃 = PCの右クリック)
+local ABILITY_WORDS = {"ability", "heavy", "skill", "能力"}
+local okV, VIM = pcall(function() return game:GetService("VirtualInputManager") end)
+if not okV then VIM = nil end
+
+-- 右クリックを押す/離す。方式: 偽装(ゲームの入力処理を直接呼ぶ) / マウス(本物の入力を送る)
+-- 押している間は、ゲームが「右クリック中か」を調べたときも「押している」と答える(フック)
+local function rmbSet(down)
+    if S.abilityMode ~= "マウスのみ" then pcall(fakeButton, Enum.UserInputType.MouseButton2, down) end
+    if S.abilityMode ~= "偽装のみ" and VIM then
+        pcall(function()
+            local vs = workspace.CurrentCamera.ViewportSize
+            VIM:SendMouseButtonEvent(vs.X / 2, vs.Y / 2, 1, down, game, 0)
+        end)
+    end
+    env.RL_RMB = down
+end
+
+-- 能力のテスト(3秒後に右クリックを1回押す。ナイフを持って、敵の近くで試す)
+local function testRMB()
+    say("3秒後に右クリックを送ります…")
+    task.delay(3, function()
+        rmbSet(true)
+        task.wait(S.abilityHold)
+        rmbSet(false)
+        say("右クリックを送りました (" .. S.abilityMode .. ")")
+    end)
+end
+
+local function equipKnife(char, hum)
+    if tick() - K.lastEquip < 1 then return end
+    if weaponOf(lp, char):lower():find("knife", 1, true) then return end
+    K.lastEquip = tick()
     local bp = lp:FindFirstChild("Backpack")
     if bp then
         for _, t in ipairs(bp:GetChildren()) do
-            if t:IsA("Tool") and t.Name:lower():find("knife", 1, true) then return t, false end
+            if t:IsA("Tool") and t.Name:lower():find("knife", 1, true) then
+                pcall(function() hum:EquipTool(t) end)
+                return
+            end
         end
     end
+    pcall(pressWords, {"knife", "ナイフ"})
 end
 
-local function goHome(root)
-    local home = (RL.getHome and RL.getHome()) or K.origin
-    if home then
-        root.CFrame = CFrame.new(home)
-        root.AssemblyLinearVelocity = Vector3.zero
-        root.AssemblyAngularVelocity = Vector3.zero
+-- 今見えているボタンの名前を一覧にする(能力ボタンの名前を調べる用)
+local function listButtons()
+    local lines = {}
+    for _, d in ipairs(pg:GetDescendants()) do
+        if d:IsA("GuiButton") and not ourGui(d) and d.AbsoluteSize.X > 0 then
+            local t = d:IsA("TextButton") and d.Text or ""
+            for _, ch in ipairs(d:GetDescendants()) do
+                if ch:IsA("TextLabel") and ch.Text ~= "" then t = t .. " " .. ch.Text end
+            end
+            table.insert(lines, d.Name .. (t ~= "" and (" [" .. t .. "]") or ""))
+            if #lines >= 40 then break end
+        end
     end
+    local out = #lines > 0 and table.concat(lines, "\n") or "見えているボタンなし"
+    say(out)
+    if setclipboard then pcall(setclipboard, out) end
 end
+
+-- 刺している間は、物理計算の直前(Stepped)にも位置を合わせ直す(サーバーに届く位置を安定させる)
+track(RunService.Stepped:Connect(function()
+    if not (S.rage and S.knife and K.state == "strike" and K.enemy) then return end
+    local root = lp.Character and lp.Character:FindFirstChild("HumanoidRootPart")
+    local er = K.enemy:FindFirstChild("HumanoidRootPart")
+    if root and er then pcall(applyStrike, root, er) end
+end))
 
 track(RunService.Heartbeat:Connect(function()
     if not (S.rage and S.knife) then
-        K.state, K.t, K.enemy = "wait", tick(), nil
+        if K.rmbDown then pcall(rmbSet, false) K.rmbDown = false end
+        env.RL_RMB = false
+        ST.knifeFar = false
+        K.state, K.t, K.enemy, K.far, K.base = "wait", tick(), nil, nil, nil
         return
     end
     local char = lp.Character
@@ -1784,49 +2372,303 @@ track(RunService.Heartbeat:Connect(function()
     local hum = char and char:FindFirstChildOfClass("Humanoid")
     if not root or not hum or hum.Health <= 0 then return end
 
-    -- ナイフを持っていなければ持つ
-    local kn, equipped = findKnife()
-    if kn and not equipped then pcall(function() hum:EquipTool(kn) end) end
+    K.base = K.base or root.Position   -- 「マップから離れる」基準(ナイフモードを始めた場所)
+    ST.knifeFar = K.far ~= nil and K.state ~= "strike"
+    ST.lastSet = nil
+    equipKnife(char, hum)
 
     if K.state == "wait" then
+        if K.far then
+            place(root, K.far)
+        elseif S.knifeSpin then
+            place(root, root.Position)
+        end
         if tick() - K.t >= S.knifeWait then
             local e = RL.closest()
-            local er = e and e:FindFirstChild("HumanoidRootPart")
-            if er and not (S.avoidReflect and isDeflecting(e)) then
-                K.origin = root.Position
-                K.state, K.t, K.enemy = "strike", tick(), e
+            if e and e:FindFirstChild("HumanoidRootPart") then
+                local eh0 = e:FindFirstChildOfClass("Humanoid")
+                K.enemy, K.pressed, K.hp0 = e, false, eh0 and eh0.Health
+                K.rmbDown, K.rmbDone = false, false
+                if S.knifeAbility and S.abilityLead > 0 then
+                    -- 移動の「abilityLead」秒前に、先に能力(右クリック)を押し始める
+                    K.state, K.t = "prep", tick()
+                    K.rmbDown, K.rmbT = true, tick()
+                    pcall(pressWords, ABILITY_WORDS)
+                    rmbSet(true)
+                else
+                    K.state, K.t = "strike", tick()
+                end
             end
+        end
+    elseif K.state == "prep" then
+        -- 能力を先に押したまま、今の場所(遠い待機場所)で待つ。時間が来たら背後へ移動
+        if K.far then
+            place(root, K.far)
+        elseif S.knifeSpin then
+            place(root, root.Position)
+        end
+        local e = K.enemy
+        local er = e and e:FindFirstChild("HumanoidRootPart")
+        local eh = e and e:FindFirstChildOfClass("Humanoid")
+        if not er or not eh or eh.Health <= 0 then
+            if K.rmbDown then rmbSet(false) K.rmbDown = false end
+            K.state, K.t, K.enemy = "wait", tick(), nil
+        elseif tick() - K.t >= S.abilityLead then
+            K.state, K.t = "strike", tick()
         end
     else
         local e = K.enemy
         local er = e and e:FindFirstChild("HumanoidRootPart")
         local eh = e and e:FindFirstChildOfClass("Humanoid")
-        if not er or not eh or eh.Health <= 0 or tick() - K.t > S.knifeStay then
-            goHome(root)
+        -- 能力を使うときは、押す・離すが終わるまで背後にいる時間を延ばす
+        local lead = (S.knifeAbility and S.abilityLead > 0) and S.abilityLead or 0
+        local stay = S.knifeStay
+        if S.knifeAbility then
+            stay = math.max(stay, (lead > 0 and 0 or S.abilityDelay) + S.abilityHold + 0.03)
+        end
+        if not er or not eh or eh.Health <= 0 or tick() - K.t > stay then
+            if K.rmbDown then rmbSet(false) K.rmbDown = false end   -- 離し忘れ防止
+            -- 命中したかを0.4秒後に確かめて、状態欄に出す(設定を調整するときの目安)
+            if e and eh then
+                local hp0 = K.hp0
+                task.delay(0.4, function()
+                    local h2 = e:FindFirstChildOfClass("Humanoid")
+                    local hit = (not h2) or h2.Health <= 0 or (hp0 ~= nil and h2.Health < hp0)
+                    K.tries += 1
+                    if hit then K.hits += 1 end
+                    say(string.format("ナイフ: 命中 %d / %d", K.hits, K.tries))
+                end)
+            end
+            K.far = farPoint(K.base)
             K.state, K.t, K.enemy = "wait", tick(), nil
+            place(root, K.far)
         else
-            -- 敵の背後(向いている方向の反対側)。ナイフが背中に届く距離
-            local pos = er.Position - er.CFrame.LookVector * S.knifeDist
-            root.CFrame = CFrame.lookAt(pos, Vector3.new(er.Position.X, pos.Y, er.Position.Z))
-            root.AssemblyLinearVelocity = Vector3.zero
-            root.AssemblyAngularVelocity = Vector3.zero
+            applyStrike(root, er)
+            if S.knifeAbility then
+                local el = tick() - K.t
+                if not K.rmbDown and not K.rmbDone and el >= S.abilityDelay then
+                    K.rmbDown, K.rmbT = true, tick()
+                    pcall(pressWords, ABILITY_WORDS)   -- 画面に能力ボタンがあれば、それも押す
+                    rmbSet(true)
+                end
+                if K.rmbDown and tick() - K.rmbT >= lead + S.abilityHold then
+                    rmbSet(false)
+                    K.rmbDown, K.rmbDone = false, true
+                end
+            end
+            -- 能力の最中は通常攻撃を止める(能力が上書きされないように)
+            if not S.knifeAbility or K.rmbDone then tryAttack(char) end
         end
     end
 end))
 
--- 背後にいる間に、敵の方を向いてナイフを振る
+-- 描画の直前: 刺す間は敵の方へ視点を向ける(設定による) / それ以外は360°ランダムに振る
+-- (視点操作の「飛行」「フリー」がONなら、画面は自由視点のままで、ゲームから見た向きだけが変わる)
 RunService:BindToRenderStep("RL_Knife", 1001, function()
-    if not (S.rage and S.knife and K.state == "strike" and K.enemy) then return end
+    if not (S.rage and S.knife) then return end
     pcall(function()
-        local char = lp.Character
-        local er = K.enemy:FindFirstChild("HumanoidRootPart")
-        if not char or not er then return end
-        local head = char:FindFirstChild("Head")
-        workspace.CurrentCamera.CFrame = CFrame.lookAt(head and head.Position or er.Position, er.Position)
-        local tool = char:FindFirstChildOfClass("Tool")
-        if tool then tool:Activate() tool:Activate() end
+        local cam = workspace.CurrentCamera
+        local striking = K.state == "strike" and K.enemy
+        if striking and S.knifeFace == "攻撃時だけ向く" then
+            local er = K.enemy:FindFirstChild("HumanoidRootPart")
+            if er then cam.CFrame = CFrame.lookAt(cam.CFrame.Position, er.Position) end
+        elseif S.knifeSpin then
+            cam.CFrame = CFrame.new(cam.CFrame.Position) * randRot()
+        end
+        if striking and lp.Character and (not S.knifeAbility or K.rmbDone) then tryAttack(lp.Character) end
     end)
 end)
+
+------------------------------------------------------------ レイジボット補助(追従・遠方帰還・近接の先行攻撃・体の飛行・エモート)
+local FC = RL.FC
+
+-- 自分の「基準の位置」: 遠方で待機しているとき以外の、一番新しい位置(同じ試合の判定に使う)
+local refPos
+track(RunService.Heartbeat:Connect(function()
+    local root = lp.Character and lp.Character:FindFirstChild("HumanoidRootPart")
+    if root and not ST.farHold and not ST.knifeFar then refPos = root.Position end
+    ST.ref = refPos
+end))
+
+-- 敵を倒したあと、遠方(座標500000など)で待機する。敵が出たら攻撃へ、RAGEがOFFなら元の場所へ戻る
+track(RunService.Heartbeat:Connect(function()
+    local pt = ST.farHold
+    if not pt then return end
+    local char = lp.Character
+    local root = char and char:FindFirstChild("HumanoidRootPart")
+    if not root then ST.farHold = nil return end
+    if ST.lastSet then ST.farHold = nil return end   -- 敵の足元へ移動した
+    if S.rage and not ST.attacking then
+        root.CFrame = CFrame.new(pt)
+        root.AssemblyLinearVelocity = Vector3.zero
+        root.AssemblyAngularVelocity = Vector3.zero
+    else
+        ST.farHold = nil
+        if not S.rage then
+            local home = RL.getHome and RL.getHome()
+            if home then
+                root.CFrame = CFrame.new(home)
+                root.AssemblyLinearVelocity = Vector3.zero
+            end
+        end
+    end
+end))
+
+-- 敵の真下にずっといる: 物理計算の直前(Stepped)にも、敵の最新位置(先読み込み)へ合わせ直す
+track(RunService.Stepped:Connect(function()
+    if not (S.rage and S.tp) or S.knife or not ST.attacking then return end
+    if not (RL.getTarget and RL.placeUnder) then return end
+    local char = lp.Character
+    local root = char and char:FindFirstChild("HumanoidRootPart")
+    local enemyChar = RL.getTarget()
+    if not root or not enemyChar or not enemyChar:FindFirstChild("HumanoidRootPart") then return end
+    pcall(function()
+        local look = enemyChar:FindFirstChild("UpperTorso") or enemyChar.HumanoidRootPart
+        RL.placeUnder(root, enemyChar, look.Position)
+    end)
+end))
+
+-- 近接武器(チェンソーなど)は、レイジボットが待機している間も攻撃アニメを出し続ける
+local MELEE = {"chainsaw", "knife", "katana", "scythe", "battle axe", "battleaxe", "maul", "spear",
+    "fists", "trowel", "riot shield", "glast shard"}
+local function isMelee(tool)
+    local n = tool.Name:lower()
+    for _, w in ipairs(MELEE) do
+        if n:find(w, 1, true) then return true end
+    end
+    return false
+end
+
+local lastPre = 0
+track(RunService.Heartbeat:Connect(function()
+    if not S.meleePre or S.knife or not (S.rage or S.auto) then return end
+    if ST.attacking then return end   -- 敵がいるときは、通常のレイジボットが攻撃する
+    local char = lp.Character
+    local tool = char and char:FindFirstChildOfClass("Tool")
+    if not tool or not isMelee(tool) then return end
+    if tick() - lastPre < 0.12 then return end
+    lastPre = tick()
+    pcall(function() tool:Activate() end)
+    if S.fakeInput then
+        pcall(fakeButton, Enum.UserInputType.MouseButton1, true)
+        pcall(fakeButton, Enum.UserInputType.MouseButton1, false)
+    end
+end))
+
+-- 体で飛ぶ(スティックでカメラの向きへ、▲▼ボタンで上下)
+local ctrl, flyOn = nil, false
+local function moveVec()
+    if not ctrl then
+        pcall(function()
+            local ps = lp:FindFirstChild("PlayerScripts")
+            local pm = ps and ps:FindFirstChild("PlayerModule")
+            if pm then ctrl = require(pm):GetControls() end
+        end)
+    end
+    if ctrl then
+        local ok, v = pcall(function() return ctrl:GetMoveVector() end)
+        if ok and typeof(v) == "Vector3" then return v end
+    end
+    return Vector3.zero
+end
+
+track(RunService.Stepped:Connect(function()
+    local char = lp.Character
+    local root = char and char:FindFirstChild("HumanoidRootPart")
+    local hum = char and char:FindFirstChildOfClass("Humanoid")
+    if not root or not hum then return end
+    if S.bodyFly and not ST.attacking and not S.knife and not ST.farHold then
+        flyOn = true
+        hum.PlatformStand = true
+        local cf = workspace.CurrentCamera.CFrame
+        local mv = moveVec()
+        local dir = cf.RightVector * mv.X + cf.LookVector * (-mv.Z)
+        if FC.up then dir += Vector3.new(0, 1, 0) end
+        if FC.down then dir -= Vector3.new(0, 1, 0) end
+        if dir.Magnitude > 1 then dir = dir.Unit end
+        root.AssemblyLinearVelocity = dir * S.flySpeed
+        root.AssemblyAngularVelocity = Vector3.zero
+        local flat = Vector3.new(cf.LookVector.X, 0, cf.LookVector.Z)
+        if flat.Magnitude > 0.01 then
+            root.CFrame = CFrame.lookAt(root.Position, root.Position + flat)
+        end
+    elseif flyOn then
+        flyOn = false
+        if not S.rage then hum.PlatformStand = false end
+    end
+end))
+
+-- エモート: ReplicatedStorageにあるエモートのアニメを選んで再生 / INMUが再生中のエモートをコピー
+local emoteIds, emoteNames = {}, {}
+pcall(function()
+    for _, d in ipairs(game:GetService("ReplicatedStorage"):GetDescendants()) do
+        if d:IsA("Animation") and d.AnimationId ~= "" and #emoteIds < 80 then
+            local full = d:GetFullName():lower()
+            if full:find("emote", 1, true) or full:find("dance", 1, true)
+                or full:find("inmu", 1, true) or full:find("king", 1, true) then
+                table.insert(emoteIds, d.AnimationId)
+                table.insert(emoteNames, string.format("%d %s", #emoteIds, d.Name))
+            end
+        end
+    end
+end)
+if #emoteNames == 0 then emoteNames = {"(見つからない)"} end
+if S.emoteSel == nil then S.emoteSel = emoteNames[1] end
+
+local emoteTracks = {}
+local function stopEmote()
+    for _, t in ipairs(emoteTracks) do pcall(function() t:Stop(0.1) end) end
+    emoteTracks = {}
+end
+
+local function playAnimId(id)
+    local char = lp.Character
+    local hum = char and char:FindFirstChildOfClass("Humanoid")
+    local an = hum and hum:FindFirstChildOfClass("Animator")
+    if not an then say("アニメーターがありません") return false end
+    local a = Instance.new("Animation")
+    a.AnimationId = id
+    local ok, tr = pcall(function() return an:LoadAnimation(a) end)
+    if not ok or not tr then say("再生できませんでした") return false end
+    tr.Priority = Enum.AnimationPriority.Action4
+    tr.Looped = true
+    tr:Play(0.1)
+    table.insert(emoteTracks, tr)
+    return true
+end
+
+local function playEmote()
+    local idx
+    for i, n in ipairs(emoteNames) do if n == S.emoteSel then idx = i end end
+    local id = idx and emoteIds[idx]
+    if not id then say("エモートが選ばれていません") return end
+    stopEmote()
+    if playAnimId(id) then say("エモート再生: " .. tostring(S.emoteSel)) end
+end
+
+local function copyInmu()
+    local target
+    for _, p in ipairs(Players:GetPlayers()) do
+        if p ~= lp and (p.Name .. " " .. p.DisplayName):lower():find("inmu", 1, true) then
+            target = p
+            break
+        end
+    end
+    if not target or not target.Character then say("INMUという名前のプレイヤーがいません") return end
+    local hum = target.Character:FindFirstChildOfClass("Humanoid")
+    local an = hum and hum:FindFirstChildOfClass("Animator")
+    if not an then say("相手のアニメーターが見つかりません") return end
+    local ids = {}
+    for _, t in ipairs(an:GetPlayingAnimationTracks()) do
+        local a = t.Animation
+        local pv = t.Priority.Value
+        if a and a.AnimationId ~= "" and pv >= 2 and pv < 1000 then table.insert(ids, a.AnimationId) end
+    end
+    if #ids == 0 then say("INMUは今、エモートを再生していません") return end
+    stopEmote()
+    for _, id in ipairs(ids) do playAnimId(id) end
+    say("INMUのエモートをコピーしました (" .. #ids .. "個)")
+end
 
 ------------------------------------------------------------ ラグ対策(エフェクト・弾・ヒット演出・他人のアニメ)
 local FX_CLASS = {ParticleEmitter = true, Trail = true, Beam = true, Fire = true, Smoke = true, Sparkles = true}
@@ -2036,6 +2878,7 @@ RL.addToggle("ESP", "esp")
 RL.addToggle("体力バー", "hpbar")
 RL.addToggle("名前・距離", "nameDist")
 RL.addToggle("武器表示", "espWeapon")
+RL.addToggle("ランク表示", "espRank")
 RL.addToggle("FOV円", "fovCircle")
 RL.addToggle("エイムボット", "aim")
 RL.addCycle("エイム部位", {"頭", "胴体"}, "aimPart", function(v) return v end)
@@ -2052,11 +2895,22 @@ RL.addCycle("SA命中率", {25, 50, 75, 100}, "saChance", function(v) return v .
 RL.addToggle("撃つ間だけ", "saHold")
 RL.addToggle("画面レイ変更", "saScreenRay")
 RL.addToggle("反射回避", "avoidReflect")
-RL.addCycle("反射検知", {"検知", "刀持ち全員"}, "reflectMode", function(v) return v end)
+RL.addCycle("反射検知", {"検知", "アニメ", "刀持ち全員"}, "reflectMode", function(v) return v end)
 RL.addToggle("ナイフモード", "knife")
-RL.addCycle("ナイフ距離", {3, 4, 5, 6, 8}, "knifeDist", function(v) return v .. "st" end)
-RL.addCycle("ナイフ滞在", {0.05, 0.1, 0.2}, "knifeStay", function(v) return v .. "秒" end)
+RL.addCycle("ナイフ後方", {0, 2, 3, 4, 6, 8, 10, 12}, "knifeBack", function(v) return v .. "st" end)
+RL.addCycle("ナイフ地下", {0, 2, 4, 6, 8, 10, 12}, "knifeDown", function(v) return v .. "st" end)
+RL.addCycle("ナイフ向き", {"攻撃時だけ向く", "向かない"}, "knifeFace", function(v) return v end)
+RL.addToggle("ナイフ予測", "knifePredict")
+RL.addCycle("ナイフ滞在", {0.05, 0.1, 0.2, 0.3}, "knifeStay", function(v) return v .. "秒" end)
 RL.addCycle("ナイフ待機", {1, 2, 3, 5}, "knifeWait", function(v) return v .. "秒" end)
+RL.addCycle("ナイフ帰還距離", {1000, 5000, 20000, 50000}, "knifeFar", function(v) return v .. "st" end)
+RL.addToggle("入力偽装攻撃", "fakeInput")
+RL.addToggle("視点ブンブン", "knifeSpin")
+RL.addToggle("背中で能力ボタン", "knifeAbility")
+RL.addCycle("能力入力", {"両方", "偽装のみ", "マウスのみ"}, "abilityMode", function(v) return v end)
+RL.addCycle("能力先押し", {0, 0.05, 0.1, 0.2, 0.3}, "abilityLead", function(v) return v .. "秒前" end)
+RL.addCycle("能力タイミング", {0, 0.02, 0.05, 0.1}, "abilityDelay", function(v) return v .. "秒" end)
+RL.addCycle("能力長押し", {0.03, 0.05, 0.1, 0.2}, "abilityHold", function(v) return v .. "秒" end)
 RL.addToggle("無限ジャンプ", "infJump")
 RL.addToggle("アニメ高速", "animFast")
 RL.addCycle("連射回数", {1, 2, 3}, "fireN", function(v) return v .. "回" end)
@@ -2066,6 +2920,19 @@ RL.addToggle("エフェクト削除", "lagFx", function(on) if on then sweep() e
 RL.addToggle("弾の描画を消す", "lagBullet", function(on) if on then sweep() end end)
 RL.addToggle("ヒット演出を消す", "lagHit", function(on) if on then sweep() end end)
 RL.addAction("ラグ調査", lagReport)
+RL.addAction("敵情報調査", dumpEnemy)
+RL.addAction("ボタン一覧", listButtons)
+RL.addAction("右クリックテスト", testRMB)
+RL.addToggle("遠方帰還", "farHome")
+RL.addCycle("遠方の座標", {100000, 500000, 1000000}, "farHomeDist", function(v) return tostring(v) end)
+RL.addToggle("追従予測", "followPredict")
+RL.addToggle("近接の先行攻撃", "meleePre")
+RL.addToggle("体で飛ぶ", "bodyFly")
+RL.addCycle("体の飛行速度", {30, 60, 120, 250}, "flySpeed", function(v) return tostring(v) end)
+RL.addCycle("エモート", emoteNames, "emoteSel", function(v) return v end)
+RL.addAction("エモート再生", playEmote)
+RL.addAction("エモート停止", stopEmote)
+RL.addAction("INMUのエモートをコピー", copyInmu)
 RL.addToggle("足速度変更", "walk")
 RL.addCycle("足の速さ", {16, 24, 32, 50, 80, 120, 200}, "walkSpeed", function(v) return tostring(v) end)
 RL.addAction("SA調査", function()
